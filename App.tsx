@@ -158,15 +158,17 @@ const App: React.FC = () => {
         setIsEnhancing(true);
         setError(null);
         setWarning(null);
+        setGenerationStatus('Aprimorando ideia...');
         try {
             const params = getGenerationParams();
-            const enhanced = await geminiService.enhanceStoryPrompt(apiKey, params);
+            const enhanced = await geminiService.enhanceStoryPrompt(apiKey, params, setGenerationStatus);
             setMainPrompt(enhanced);
         } catch (err) {
             console.error(err);
             setError(err instanceof Error ? `Erro ao aprimorar ideia: ${err.message}` : "Ocorreu um erro desconhecido.");
         } finally {
             setIsEnhancing(false);
+            setGenerationStatus(null);
         }
     }, [mainPrompt, getGenerationParams, apiKey]);
     
@@ -213,7 +215,7 @@ const App: React.FC = () => {
 
         try {
             const params = getGenerationParams();
-            let allContent = await geminiService.generateAllContent(apiKey, params);
+            let allContent = await geminiService.generateAllContent(apiKey, params, setGenerationStatus);
             let finalContent = allContent.content;
             
             const minChars = Math.max(100, params.characterCount - 500);
@@ -229,7 +231,7 @@ const App: React.FC = () => {
                 const isTooLong = finalContent.length > maxChars;
                 setGenerationStatus(`Tentativa ${refinementAttempts}/${MAX_REFINEMENT_ATTEMPTS}: Conteúdo fora do alvo. ${isTooLong ? 'Resumindo' : 'Expandindo'}...`);
 
-                finalContent = await geminiService.refineTextLength(apiKey, params, finalContent);
+                finalContent = await geminiService.refineTextLength(apiKey, params, finalContent, setGenerationStatus);
             }
 
             allContent.content = finalContent;
@@ -326,12 +328,13 @@ const App: React.FC = () => {
             return;
         }
         if (!regenModalField) return;
-
-        setRegeneratingField(regenModalField);
+        
         const fieldToRegen = regenModalField;
+        setRegeneratingField(fieldToRegen);
         setRegenModalField(null);
         setError(null);
         setWarning(null);
+        setGenerationStatus(`Regenerando ${fieldToRegen}...`);
 
         try {
             const params = getGenerationParams();
@@ -339,20 +342,20 @@ const App: React.FC = () => {
 
             switch (fieldToRegen) {
                 case 'titles':
-                    setGeneratedTitles(await geminiService.generateTitles(apiKey, params, regenModificationPrompt));
+                    setGeneratedTitles(await geminiService.generateTitles(apiKey, params, regenModificationPrompt, setGenerationStatus));
                     break;
                 case 'description':
-                    setGeneratedDescription(await geminiService.generateDescription(apiKey, params, regenModificationPrompt));
+                    setGeneratedDescription(await geminiService.generateDescription(apiKey, params, regenModificationPrompt, setGenerationStatus));
                     break;
                 case 'tags':
-                    setGeneratedTags(await geminiService.generateTags(apiKey, params, regenModificationPrompt));
+                    setGeneratedTags(await geminiService.generateTags(apiKey, params, regenModificationPrompt, setGenerationStatus));
                     break;
                 case 'thumbnail':
-                    setGeneratedThumbnailPrompt(await geminiService.generateThumbnailPrompt(apiKey, params, contentForThumbnail, regenModificationPrompt));
+                    setGeneratedThumbnailPrompt(await geminiService.generateThumbnailPrompt(apiKey, params, contentForThumbnail, regenModificationPrompt, setGenerationStatus));
                     break;
                 case 'content':
                     {
-                        let newContent = await geminiService.generateContent(apiKey, params, regenModificationPrompt);
+                        let newContent = await geminiService.generateContent(apiKey, params, regenModificationPrompt, setGenerationStatus);
                         
                         const minChars = Math.max(100, params.characterCount - 500);
                         const maxChars = params.characterCount + 500;
@@ -365,8 +368,8 @@ const App: React.FC = () => {
                         ) {
                             refinementAttempts++;
                             const isTooLong = newContent.length > maxChars;
-                            setWarning(`Tentativa ${refinementAttempts}/${MAX_REFINEMENT_ATTEMPTS}: Conteúdo regenerado fora do alvo. ${isTooLong ? 'Resumindo' : 'Expandindo'}...`);
-                            newContent = await geminiService.refineTextLength(apiKey, params, newContent);
+                            setGenerationStatus(`Tentativa ${refinementAttempts}/${MAX_REFINEMENT_ATTEMPTS}: Conteúdo regenerado fora do alvo. ${isTooLong ? 'Resumindo' : 'Expandindo'}...`);
+                            newContent = await geminiService.refineTextLength(apiKey, params, newContent, setGenerationStatus);
                         }
 
                         const finalContentLen = newContent.length;
@@ -392,7 +395,7 @@ const App: React.FC = () => {
                     }
                     break;
                 case 'cta':
-                    setGeneratedCta(await geminiService.generateCta(apiKey, params, regenModificationPrompt));
+                    setGeneratedCta(await geminiService.generateCta(apiKey, params, regenModificationPrompt, setGenerationStatus));
                     break;
             }
         } catch (err) {
@@ -401,6 +404,7 @@ const App: React.FC = () => {
         } finally {
             setRegeneratingField(null);
             setRegenModificationPrompt('');
+            setGenerationStatus(null);
         }
     }, [regenModalField, getGenerationParams, regenModificationPrompt, generatedContent, apiKey]);
 
@@ -601,10 +605,10 @@ const App: React.FC = () => {
                             </button>
                         </div>
                         
-                        {isGenerating && generationStatus && (
+                        {isLoading && generationStatus && (
                             <p className="text-amber-300 mt-2 text-center animate-pulse">{generationStatus}</p>
                         )}
-                        {warning && <p className="text-yellow-400 mt-2 text-center">{warning}</p>}
+                        {warning && !generationStatus && <p className="text-yellow-400 mt-2 text-center">{warning}</p>}
                         {error && <p className="text-red-400 mt-2 text-center">{error}</p>}
                     </div>
 

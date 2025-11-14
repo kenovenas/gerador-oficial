@@ -2,6 +2,7 @@ import { GoogleGenAI, Type, GenerateContentResponse } from "@google/genai";
 import { GenerationParams, AllContentResponse, CreationType } from "../types";
 
 const model = 'gemini-2.5-flash';
+const MAX_RETRIES = 3; // Total attempts will be MAX_RETRIES + 1
 
 /**
  * Creates a GoogleGenAI instance with the provided API key.
@@ -42,6 +43,47 @@ const getJson = <T>(response: GenerateContentResponse): T => {
 };
 
 /**
+ * Wraps a Gemini API call with a retry mechanism for overloaded errors.
+ * @param apiCall The function that makes the actual API call.
+ * @param onStatusUpdate A callback to update the UI with the current status.
+ * @returns A Promise that resolves with the API response.
+ */
+const generateWithRetry = async (
+    apiCall: () => Promise<GenerateContentResponse>,
+    onStatusUpdate?: (status: string) => void
+): Promise<GenerateContentResponse> => {
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+        try {
+            return await apiCall();
+        } catch (error: any) {
+            const isOverloaded = 
+                (error.message?.includes('503') || 
+                 error.message?.toLowerCase().includes('overloaded') || 
+                 (error.cause as any)?.status === 'UNAVAILABLE');
+
+            if (isOverloaded && attempt < MAX_RETRIES) {
+                const delay = Math.pow(2, attempt + 1) * 1000; // Exponential backoff: 2s, 4s, 8s
+                const statusMessage = `O modelo está sobrecarregado. Tentando novamente em ${delay / 1000}s... (${attempt + 1}/${MAX_RETRIES})`;
+                console.warn(statusMessage, error);
+                if (onStatusUpdate) {
+                    onStatusUpdate(statusMessage);
+                }
+                await new Promise(resolve => setTimeout(resolve, delay));
+            } else {
+                console.error(`API call failed after ${attempt + 1} attempts.`, error);
+                const finalMessage = isOverloaded 
+                    ? "O modelo parece estar sobrecarregado. Por favor, tente novamente mais tarde." 
+                    : error.message || "Ocorreu um erro desconhecido na API.";
+                throw new Error(finalMessage);
+            }
+        }
+    }
+    // This should be unreachable, but TypeScript requires a return path or throw.
+    throw new Error("Falha na chamada da API após múltiplas tentativas.");
+};
+
+
+/**
  * Creates a base prompt with shared context for all generation requests.
  * @param params The generation parameters.
  * @returns A base prompt string.
@@ -56,7 +98,7 @@ Ideia Principal: "${params.mainPrompt}".`;
 /**
  * Enhances the user's main prompt for a story.
  */
-export const enhanceStoryPrompt = async (apiKey: string, params: GenerationParams): Promise<string> => {
+export const enhanceStoryPrompt = async (apiKey: string, params: GenerationParams, onStatusUpdate?: (status: string) => void): Promise<string> => {
     const ai = getAi(apiKey);
     if (params.creationType !== CreationType.Story) {
         return params.mainPrompt;
@@ -65,17 +107,17 @@ export const enhanceStoryPrompt = async (apiKey: string, params: GenerationParam
 Ideia Original: "${params.mainPrompt}"
 Retorne APENAS a nova ideia aprimorada, sem qualquer outro texto ou introdução.`;
 
-    const response = await ai.models.generateContent({
+    const response = await generateWithRetry(() => ai.models.generateContent({
         model,
         contents: prompt,
-    });
+    }), onStatusUpdate);
     return getText(response);
 };
 
 /**
  * Generates the main content (story or prayer).
  */
-export const generateContent = async (apiKey: string, params: GenerationParams, modification?: string): Promise<string> => {
+export const generateContent = async (apiKey: string, params: GenerationParams, modification?: string, onStatusUpdate?: (status: string) => void): Promise<string> => {
     const ai = getAi(apiKey);
     const creationType = params.creationType === CreationType.Story ? "história bíblica" : "oração";
     const minChars = Math.max(100, params.characterCount - 500);
@@ -93,21 +135,17 @@ ${modification ? `Modificação solicitada: "${modification}"` : ''}
 
 Cumpra rigorosamente todas as regras acima.`;
 
-    const response = await ai.models.generateContent({
+    const response = await generateWithRetry(() => ai.models.generateContent({
         model,
         contents: prompt,
-    });
+    }), onStatusUpdate);
     return getText(response);
 };
 
 /**
  * Refines existing text to fit a target character count by summarizing or expanding.
- * @param apiKey The user-provided Gemini API key.
- * @param params The original generation parameters for context.
- * @param textToEdit The text that needs length adjustment.
- * @returns The refined text.
  */
-export const refineTextLength = async (apiKey: string, params: GenerationParams, textToEdit: string): Promise<string> => {
+export const refineTextLength = async (apiKey: string, params: GenerationParams, textToEdit: string, onStatusUpdate?: (status: string) => void): Promise<string> => {
     const ai = getAi(apiKey);
     const creationType = params.creationType === CreationType.Story ? "história bíblica" : "oração";
     const minChars = Math.max(100, params.characterCount - 500);
@@ -136,10 +174,10 @@ REGRAS ESTRITAS E OBRIGATÓRIAS:
 2.  A ${creationType} deve permanecer completa e coerente.
 3.  Retorne APENAS o texto finalizado, sem nenhuma explicação, introdução ou comentário.`;
 
-    const response = await ai.models.generateContent({
+    const response = await generateWithRetry(() => ai.models.generateContent({
         model,
         contents: prompt,
-    });
+    }), onStatusUpdate);
     return getText(response);
 };
 
@@ -147,7 +185,7 @@ REGRAS ESTRITAS E OBRIGATÓRIAS:
 /**
  * Generates a list of titles.
  */
-export const generateTitles = async (apiKey: string, params: GenerationParams, modification?: string): Promise<string[]> => {
+export const generateTitles = async (apiKey: string, params: GenerationParams, modification?: string, onStatusUpdate?: (status: string) => void): Promise<string[]> => {
     const ai = getAi(apiKey);
     const prompt = `${getBasePrompt(params)}
 Gere 5 sugestões de títulos criativos e atraentes.
@@ -155,7 +193,7 @@ ${params.titlePrompt ? `Leve em consideração o seguinte desejo para o título:
 ${modification ? `Modificação solicitada: "${modification}"` : ''}
 Retorne a resposta como um array JSON de strings. Exemplo: ["Título 1", "Título 2"]`;
 
-    const response = await ai.models.generateContent({
+    const response = await generateWithRetry(() => ai.models.generateContent({
         model,
         contents: prompt,
         config: {
@@ -165,7 +203,7 @@ Retorne a resposta como um array JSON de strings. Exemplo: ["Título 1", "Títul
                 items: { type: Type.STRING }
             }
         }
-    });
+    }), onStatusUpdate);
 
     const parsed = getJson<string[]>(response);
     return Array.isArray(parsed) ? parsed : [];
@@ -174,7 +212,7 @@ Retorne a resposta como um array JSON de strings. Exemplo: ["Título 1", "Títul
 /**
  * Generates a description for the content.
  */
-export const generateDescription = async (apiKey: string, params: GenerationParams, modification?: string): Promise<string> => {
+export const generateDescription = async (apiKey: string, params: GenerationParams, modification?: string, onStatusUpdate?: (status: string) => void): Promise<string> => {
     const ai = getAi(apiKey);
     const prompt = `${getBasePrompt(params)}
 Gere uma descrição concisa e envolvente (para redes sociais ou YouTube) com no máximo 250 caracteres.
@@ -182,24 +220,24 @@ ${params.descriptionPrompt ? `Leve em consideração o seguinte desejo para a de
 ${modification ? `Modificação solicitada: "${modification}"` : ''}
 Retorne apenas o texto da descrição.`;
     
-    const response = await ai.models.generateContent({
+    const response = await generateWithRetry(() => ai.models.generateContent({
         model,
         contents: prompt,
-    });
+    }), onStatusUpdate);
     return getText(response);
 };
 
 /**
  * Generates SEO tags.
  */
-export const generateTags = async (apiKey: string, params: GenerationParams, modification?: string): Promise<string[]> => {
+export const generateTags = async (apiKey: string, params: GenerationParams, modification?: string, onStatusUpdate?: (status: string) => void): Promise<string[]> => {
     const ai = getAi(apiKey);
     const prompt = `${getBasePrompt(params)}
 Gere uma lista de 10 a 15 tags de SEO relevantes.
 ${modification ? `Modificação solicitada: "${modification}"` : ''}
 Retorne a resposta como um array JSON de strings. Exemplo: ["tag1", "tag2"]`;
     
-    const response = await ai.models.generateContent({
+    const response = await generateWithRetry(() => ai.models.generateContent({
         model,
         contents: prompt,
         config: {
@@ -209,7 +247,7 @@ Retorne a resposta como um array JSON de strings. Exemplo: ["tag1", "tag2"]`;
                 items: { type: Type.STRING }
             }
         }
-    });
+    }), onStatusUpdate);
     const parsed = getJson<string[]>(response);
     return Array.isArray(parsed) ? parsed : [];
 };
@@ -217,24 +255,24 @@ Retorne a resposta como um array JSON de strings. Exemplo: ["tag1", "tag2"]`;
 /**
  * Generates a Call to Action.
  */
-export const generateCta = async (apiKey: string, params: GenerationParams, modification?: string): Promise<string> => {
+export const generateCta = async (apiKey: string, params: GenerationParams, modification?: string, onStatusUpdate?: (status: string) => void): Promise<string> => {
     const ai = getAi(apiKey);
     const prompt = `${getBasePrompt(params)}
 Gere uma "Chamada para Ação" (Call to Action - CTA) curta e inspiradora que incentive o engajamento (curtir, comentar, compartilhar).
 ${modification ? `Modificação solicitada: "${modification}"` : ''}
 Retorne apenas o texto do CTA.`;
     
-    const response = await ai.models.generateContent({
+    const response = await generateWithRetry(() => ai.models.generateContent({
         model,
         contents: prompt,
-    });
+    }), onStatusUpdate);
     return getText(response);
 };
 
 /**
  * Generates a prompt for an image generation model to create a thumbnail.
  */
-export const generateThumbnailPrompt = async (apiKey: string, params: GenerationParams, content: string, modification?: string): Promise<string> => {
+export const generateThumbnailPrompt = async (apiKey: string, params: GenerationParams, content: string, modification?: string, onStatusUpdate?: (status: string) => void): Promise<string> => {
     const ai = getAi(apiKey);
     const prompt = `${getBasePrompt(params)}
 Com base no conteúdo gerado abaixo, crie um prompt detalhado para um gerador de imagens (como Midjourney ou DALL-E) para criar uma thumbnail.
@@ -244,17 +282,17 @@ ${modification ? `Modificação solicitada: "${modification}"` : ''}
 O prompt para a imagem deve ser em inglês, descritivo, e focado em elementos visuais, atmosfera e estilo.
 Retorne apenas o prompt para a imagem.`;
 
-    const response = await ai.models.generateContent({
+    const response = await generateWithRetry(() => ai.models.generateContent({
         model,
         contents: prompt,
-    });
+    }), onStatusUpdate);
     return getText(response);
 };
 
 /**
  * Generates all content pieces in a single API call for efficiency.
  */
-export const generateAllContent = async (apiKey: string, params: GenerationParams): Promise<AllContentResponse> => {
+export const generateAllContent = async (apiKey: string, params: GenerationParams, onStatusUpdate?: (status: string) => void): Promise<AllContentResponse> => {
     const ai = getAi(apiKey);
     const creationType = params.creationType === CreationType.Story ? "história bíblica" : "oração";
     const minChars = Math.max(100, params.characterCount - 500);
@@ -272,7 +310,7 @@ Gere um pacote completo de conteúdo, seguindo as regras para cada item:
 
 A resposta DEVE ser um objeto JSON bem formado com a estrutura definida no schema.`;
 
-    const response = await ai.models.generateContent({
+    const response = await generateWithRetry(() => ai.models.generateContent({
         model,
         contents: prompt,
         config: {
@@ -290,7 +328,7 @@ A resposta DEVE ser um objeto JSON bem formado com a estrutura definida no schem
                 required: ["content", "titles", "description", "tags", "cta", "thumbnailPrompt"]
             }
         }
-    });
+    }), onStatusUpdate);
 
     return getJson<AllContentResponse>(response);
 };
